@@ -85,10 +85,9 @@ erDiagram
 > **Composite Keys & Idempotence**
 > Primary keys for `transactions`, `funds`, and `fund_nav` use composite structures incorporating `snapshot_id`. This allows multiple independent datasets (like `sample_a`, `sample_b`, and `sample_c`) to coexist in the database without conflicts. The data ingestion pipeline is fully idempotent.
 
-### Performance & Constraint Validations
-* **Composite Indexes**: We utilize a composite index `idx_txn_snapshot_date_category` on `transactions(snapshot_id, date, category)` for fast aggregation and range queries.
-* **Foreign Key Constraints**: Constraints on `fund_nav` and `holdings` link back to `funds(id, snapshot_id)` with `ON DELETE CASCADE` to ensure referential integrity.
-* **No Redundancy**: Redundant index structures (like duplicating unique primary keys) are avoided to save disk space and write-time overhead.
+### Database Schema Design Notes
+* **Logical Relationships**: The tables maintain a clear logical relationship where `fund_nav` and `holdings` link back to `funds(id, snapshot_id)`.
+* **Index Configuration**: Indexes are defined on columns frequently filtered or sorted by (such as `date`, `category`, and `snapshot_id`) to ensure optimal tool query execution.
 
 ---
 
@@ -119,19 +118,23 @@ Tara’s capability is divided across four distinct, domain-specific tools:
 
 ### 2. Merchant Normalization (Ingest-time)
 To match fuzzy inputs (e.g. `SWIGGY*ORDER` and `Swiggy Instamart`), merchants are normalized when ingested:
-$$\text{merchant\_canonical} = \text{first\_token}(\text{lowercase}(\text{strip\_special\_chars}(\text{merchant})))$$
+> **Formula:**
+> `merchant_canonical` = `first_token` ( `lowercase` ( `strip_special_chars` ( `merchant` ) ) )
 
 ### 3. Subscription & Recurring Detection
 A merchant is flagged as recurring if it appears in at least $N$ distinct calendar months:
-$$\text{COUNT}(\text{DISTINCT } \text{TO\_CHAR}(\text{date}, \text{'YYYY-MM'})) \ge \text{min\_months}$$
+> **Formula:**
+> `COUNT` ( `DISTINCT` `TO_CHAR` ( `date`, `'YYYY-MM'` ) ) $\ge$ `min_months`
 
 ### 4. Fund & Holding Returns
 * **Mutual Fund Return (Period)**: 
   $$\text{Return (\%)} = \frac{\text{NAV}_{\text{end}} - \text{NAV}_{\text{start}}}{\text{NAV}_{\text{start}}} \times 100$$
 * **Personal Holding Return**:
-  $$\text{Purchase Cost} = \text{units} \times \text{purchase\_nav}$$
-  $$\text{Current Value} = \text{units} \times \text{latest\_nav}$$
-  $$\text{Realised Return} = \text{Current Value} - \text{Purchase Cost}$$
+  > **Formulas:**
+  > * `Purchase Cost` = `units` $\times$ `purchase_nav`
+  > * `Current Value` = `units` $\times$ `latest_nav`
+  > * `Realised Return` = `Current Value` $-$ `Purchase Cost`
+  > * `Realised Return (%)` = `Realised Return` $/$ `Purchase Cost` $\times$ `100`
 
 ---
 
