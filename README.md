@@ -1,154 +1,157 @@
-# Tara Finance Agent
+# Tara Finance AI Agent
 
-A personal finance research AI agent that answers natural language questions about spending, transactions, and investment portfolios. Built with Mastra SDK, PostgreSQL, and TypeScript.
+Tara is a personal finance research AI agent that answers natural language questions about spending, transactions, and investment portfolios. Built with **Mastra SDK**, **PostgreSQL**, and **TypeScript**.
 
-## What it does
-
-Send a question, get a grounded answer backed by real database queries:
-
-```bash
-POST /ask
-{ "question": "How much did I spend on food in March 2025?" }
-→ { "answer": "In March 2025, you spent ₹4,075.17 on food across 7 transactions." }
+```mermaid
+flowchart LR
+    Client([User API Client]) <-->|REST API| Express[Express Server]
+    Express <-->|Mastra SDK| Tara[Tara Agent]
+    Tara <-->|customModel Proxy| Groq[Groq API Llama 4]
+    Tara <-->|Local SQL Tools| Postgres[(PostgreSQL)]
 ```
 
-Tara never guesses or invents figures. Every number comes from a tool querying PostgreSQL.
+Tara does not guess, estimate, or invent numbers. Every figure in a response is guaranteed to be grounded, retrieved directly via SQL from a PostgreSQL database, and processed.
 
-## Tech Stack
+---
 
-- **Runtime**: Node.js 20 + TypeScript (tsx)
-- **Agent Framework**: Mastra SDK
-- **LLM**: Groq (meta-llama/llama-4-scout-17b-16e-instruct) — free tier
-- **Database**: PostgreSQL 18
-- **HTTP Server**: Express
-- **Deployment**: Render + Neon Postgres
+## ⚡ Tech Stack
 
-## Local Setup
+* **Runtime**: Node.js v22+ & TypeScript (`npx tsx`)
+* **Agent Orchestration**: Mastra SDK
+* **LLM**: Groq (`meta-llama/llama-4-scout-17b-16e-instruct`) — *Free Tier*
+* **Database**: PostgreSQL 14+
+* **HTTP Server**: Express
 
-### Prerequisites
-- Node.js 18+
-- PostgreSQL 14+
-- Groq API key (free at console.groq.com)
+---
 
-### Install
+## 🚀 Quick Start
 
+### 📋 Prerequisites
+Ensure you have the following installed locally:
+* **Node.js** (v22.13.0 or higher)
+* **PostgreSQL** (running locally on port `5433` or accessible via URI)
+* **Groq API Key** (available for free at [console.groq.com](https://console.groq.com))
+
+---
+
+### 1. Installation
+Clone the repository and install dependencies:
 ```bash
-git clone https://github.com/yourusername/tara-finance-agent
+git clone https://github.com/styris12/tara-finance-agent.git
 cd tara-finance-agent
 npm install
 ```
 
-### Environment
+---
 
-Create a `.env` file:
-
+### 2. Environment Configuration
+Create a `.env` file in the project root:
 ```env
 DATABASE_URL=postgres://postgres:yourpassword@localhost:5433/tara_finance
-GROQ_API_KEY=your_groq_key
+GROQ_API_KEY=your_groq_api_key
 PORT=3000
 ```
 
-### Database Setup
+---
 
+### 3. Database Initialization
+Create the database and apply the schema:
 ```bash
-# Create the database
+# Create target database
 psql -U postgres -p 5433 -c "CREATE DATABASE tara_finance;"
 
-# Run schema
+# Apply table schemas and indexes
 psql -U postgres -p 5433 -d tara_finance -f src/db/schema.sql
 ```
 
-### Ingest Sample Data
+---
 
-```bash
-# Run for each snapshot
+### 4. Data Ingestion
+Ingest sample transactional datasets into the database by running:
+```powershell
+# Windows PowerShell Ingestion
 $env:DATA_DIR="./data/sample_a"; npx tsx scripts/ingest.ts
 $env:DATA_DIR="./data/sample_b"; npx tsx scripts/ingest.ts
 $env:DATA_DIR="./data/sample_c"; npx tsx scripts/ingest.ts
 ```
 
-For the hidden grading snapshot:
+> [!TIP]
+> Each ingestion run deletes previous entries for the snapshot before populating. Ingestion is fully idempotent and safe to re-run.
+
+---
+
+### 5. Running the Application
+
+**Development Mode (Live Reload):**
 ```bash
-DATA_DIR=./data/sample_x npx tsx scripts/ingest.ts
+npm run dev
 ```
 
-### Run the Server
-
+**Production Mode:**
 ```bash
+# Build the production bundle
+npm run build
+
+# Start the Express server
 npm start
-# or
-npx tsx src/server.ts
+```
+The server will start listening at `http://localhost:3000`.
+
+---
+
+## 🧪 Testing and Evals
+
+### Run Diagnostic Scripts
+Check direct Groq LLM API and Agent connectivity:
+```bash
+npx tsx scripts/test-groq.ts
+npx tsx scripts/test-agent-groq.ts
 ```
 
-Server starts on `http://localhost:3000`
-
-### Test the Endpoint
-
+### Run Evaluation Suite
+Run the full 12-scenario evaluation suite against the active server:
 ```bash
-curl -X POST http://localhost:3000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is my portfolio worth today?"}'
-```
-
-### Run Evals
-
-```bash
+# Ensure server is running on port 3000, then execute:
 npx tsx scripts/eval.ts
 ```
+*Expected Output: `📊 Results: 12 passed, 0 failed out of 12 total`*
 
-Expected output: 12 passed, 0 failed.
+---
 
-## API
+## 🔌 API Endpoints
 
-### POST /ask
+### `POST /ask`
+Submit a natural language financial question.
 
-**Request:**
+**Request Body:**
 ```json
-{ "question": "string" }
+{
+  "question": "How much did I spend on food in March 2025?"
+}
 ```
 
-**Response:**
+**Success Response (200 OK):**
 ```json
-{ "answer": "string" }
+{
+  "answer": "In March 2025, you spent ₹4075.17 on food."
+}
 ```
 
-**Error response:**
+**Error Response (500 Internal Server Error):**
 ```json
-{ "error": "string", "detail": "string" }
+{
+  "error": "Failed to process question",
+  "detail": "Upstream API limit exceeded"
+}
 ```
 
-### GET /health
+### `GET /health`
+Inspect server connection status and uptime.
 
-Returns server status and timestamp.
-
-## Deployment
-
-**Live URL**: `https://your-render-url.onrender.com`
-
-Deployed on Render (free tier) with Neon Postgres (free tier).
-
-### Deploy your own
-
-1. Fork this repo
-2. Create a Neon or Supabase Postgres database
-3. Deploy to Render as a Node.js web service
-4. Set environment variables: `DATABASE_URL`, `GROQ_API_KEY`, `PORT`
-5. Run ingest script against hosted DB
-
-## Observability
-
-Each request logs:
-- `request_id` — unique UUID per request
-- `question` — the original query
-- `tools_called` — which tools the agent invoked
-- `latency_ms` — total response time
-- `status` — success or error
-
-Logs appear in the server terminal and on your deployment platform's log stream.
-
-## Known Limitations
-
-- LLM provider (Groq free tier) has rate limits — high traffic may hit limits
-- NAV data is monthly, so exact-date NAV lookups use the closest available date
-- Merchant canonicalization uses first-token matching — very short or single-character merchant names may not cluster correctly
-- Cold starts on Render free tier may add 30–60 seconds on first request
+**Response (200 OK):**
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-06-04T14:00:00.000Z"
+}
+```

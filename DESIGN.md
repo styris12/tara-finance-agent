@@ -1,164 +1,157 @@
-# DESIGN.md — Tara Finance Agent
+# DESIGN.md — Tara Finance AI Agent Spec
 
-## Postgres Schema
-
-### Tables
-
-**transactions**
-- Primary key: `(id, snapshot_id)` — composite because transaction IDs repeat across snapshots
-- `merchant_canonical` — normalized merchant name computed at ingest time, never at query time
-- `amount` is signed: positive = spend, negative = refund/reversal
-- Indexed on `date`, `category`, `merchant_canonical`, `snapshot_id` — the four columns tools filter and group by most
-
-**funds**
-- Primary key: `(id, snapshot_id)` — fund IDs like `fund_bluechip` repeat across snapshots
-- Stores fund metadata only; NAV history is in a separate table
-
-**fund_nav**
-- One row per `(fund_id, snapshot_id, date)` — normalized from the `nav` array in funds.json
-- Primary key is the composite of all three columns
-- Indexed on `(fund_id, snapshot_id, date)` for efficient range queries
-
-**holdings**
-- Serial primary key — holdings have no natural unique ID in the source data
-- Stores what the user owns: `units`, `purchase_date`, `purchase_nav`
-- Joins to `fund_nav` at query time to compute current value
-
-### Why snapshot_id on every table
-
-The grading model runs an unseen fourth snapshot against the same database. Using `snapshot_id` as part of every primary key and every WHERE clause means all three sample snapshots coexist in one database without conflicts. Ingest is idempotent: re-running for `sample_a` deletes and repopulates only `sample_a` rows.
+This document details the architecture, database schema, tool configurations, and grounding formulas for the **Tara Finance AI Agent**.
 
 ---
 
-## Tool Design
+## 🏗️ System Architecture & Data Flow
 
-### Why four tools, not more
+Tara executes natural language financial commands through a deterministic, tool-grounded AI lifecycle.
 
-The assignment warns that more tools hurt selection accuracy. Each tool maps to a distinct data domain:
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Client
+    participant API as Express API (/ask)
+    participant Agent as Tara Agent
+    participant Proxy as customModel Proxy
+    participant LLM as Groq (Llama 4 Scout)
+    participant Tools as SQL Tools
+    participant DB as PostgreSQL
 
-| Tool | Domain | Primary table |
+    User->>API: POST { question: "Compare food and travel..." }
+    API->>Agent: agent.generate(question)
+    Agent->>Proxy: doGenerate()
+    Proxy->>LLM: Override temp: 0, provider: 'custom'
+    LLM->>Agent: Request tool calls
+    Agent->>Tools: execute(params)
+    Tools->>DB: Parameterized SQL Query
+    DB-->>Tools: Rows (amounts, categories)
+    Tools-->>Agent: JSON formatted results
+    Agent->>Proxy: doGenerate() with context
+    Proxy->>LLM: Compile final answer
+    LLM-->>Agent: Natural language answer
+    Agent-->>API: Response text
+    API-->>User: JSON { answer: "..." }
+```
+
+---
+
+## 🗄️ Database Design (PostgreSQL)
+
+The database holds financial transactions, fund descriptions, NAV history, and user holdings. 
+
+### Entity-Relationship Diagram
+```mermaid
+erDiagram
+    funds {
+        TEXT id PK
+        TEXT snapshot_id PK
+        TEXT name
+        TEXT category
+    }
+    transactions {
+        TEXT id PK
+        TEXT snapshot_id PK
+        DATE date
+        TEXT merchant
+        TEXT merchant_canonical
+        TEXT category
+        NUMERIC amount
+        TEXT currency
+        TEXT memo
+    }
+    fund_nav {
+        TEXT fund_id PK, FK
+        TEXT snapshot_id PK, FK
+        DATE date PK
+        NUMERIC value
+    }
+    holdings {
+        SERIAL id PK
+        TEXT fund_id FK
+        TEXT snapshot_id FK
+        TEXT fund_name
+        NUMERIC units
+        DATE purchase_date
+        NUMERIC purchase_nav
+    }
+
+    funds ||--o{ fund_nav : "tracks historical NAV"
+    funds ||--o{ holdings : "tracks portfolio holding"
+```
+
+> [!NOTE]
+> **Composite Keys & Idempotence**
+> Primary keys for `transactions`, `funds`, and `fund_nav` use composite structures incorporating `snapshot_id`. This allows multiple independent datasets (like `sample_a`, `sample_b`, and `sample_c`) to coexist in the database without conflicts. The data ingestion pipeline is fully idempotent.
+
+### Performance & Constraint Validations
+* **Composite Indexes**: We utilize a composite index `idx_txn_snapshot_date_category` on `transactions(snapshot_id, date, category)` for fast aggregation and range queries.
+* **Foreign Key Constraints**: Constraints on `fund_nav` and `holdings` link back to `funds(id, snapshot_id)` with `ON DELETE CASCADE` to ensure referential integrity.
+* **No Redundancy**: Redundant index structures (like duplicating unique primary keys) are avoided to save disk space and write-time overhead.
+
+---
+
+## 🛠️ Tool Specifications
+
+Tara’s capability is divided across four distinct, domain-specific tools:
+
+| Tool Name | Domain / Responsibilities | Target Table(s) |
 |---|---|---|
-| `query_transactions` | Spending, merchants, categories | transactions |
-| `query_fund_performance` | Fund NAV and period returns | fund_nav, funds |
-| `query_holdings` | User's personal holdings and realised returns | holdings, fund_nav |
-| `detect_recurring` | Subscription/recurring pattern detection | transactions |
+| `query_transactions` | Handles spending, merchant analysis, and category breakdowns. | `transactions` |
+| `query_fund_performance` | Calculates historical mutual fund NAVs and returns over time. | `fund_nav`, `funds` |
+| `query_holdings` | Calculates user holdings, total portfolio values, and returns. | `holdings`, `fund_nav` |
+| `detect_recurring` | Identifies potential monthly subscription services. | `transactions` |
 
-A single `query_transactions` tool handles all spending questions via an `aggregate` parameter (`sum`, `top_merchants`, `monthly_breakdown`, `category_breakdown`). This beats four narrow tools because the model only needs to make one tool selection decision.
-
-### Tool input validation
-
-All tool inputs use Zod schemas. Fields are `.optional()` so the model can omit irrelevant parameters without triggering validation errors. Defaults (`exclude_transfers = true`, `limit = 10`) are applied in the execute function, not the schema, to avoid Groq's strict schema validation rejecting missing optional fields.
+> [!TIP]
+> **Consolidated Transaction Queries**
+> Rather than using narrow, single-purpose tools for category lookup, top merchant lookup, or sum aggregation, we group these behaviors into `query_transactions` under an `aggregate` parameter. This limits choice complexity for the LLM and boosts overall execution accuracy.
 
 ---
 
-## Formulas
+## 🧮 Grounding Formulas
 
-### Spend (net spend after refunds)
-```
-net_spend = SUM(amount) WHERE amount can be positive or negative
-gross_spend = SUM(amount) WHERE amount > 0
-refunds = SUM(amount) WHERE amount < 0
-```
-Transfers (`category = 'transfer'`) are excluded by default.
+### 1. Spending Aggregations
+* **Gross Spend**: `SUM(amount) WHERE amount > 0`
+* **Refund Reversals**: `SUM(amount) WHERE amount < 0`
+* **Net Spend**: `SUM(amount)` (Automatically incorporates refunds)
+* *Internal transfers (`category = 'transfer'`) are excluded from general spend sums.*
 
-### Merchant matching
-```
-merchant_canonical = first_token(lowercase(strip_special_chars(merchant_name)))
-```
-Examples:
-- "APOLLO PHARMACY MUMBAI" → "apollo"
-- "Swiggy Instamart" → "swiggy"
-- "SWIGGY*ORDER" → "swiggy"
+### 2. Merchant Normalization (Ingest-time)
+To match fuzzy inputs (e.g. `SWIGGY*ORDER` and `Swiggy Instamart`), merchants are normalized when ingested:
+$$\text{merchant\_canonical} = \text{first\_token}(\text{lowercase}(\text{strip\_special\_chars}(\text{merchant})))$$
 
-No merchant names are hardcoded. The canonicalization runs at ingest time. Tool queries use `ILIKE '%query%'` against `merchant_canonical` for flexible matching.
+### 3. Subscription & Recurring Detection
+A merchant is flagged as recurring if it appears in at least $N$ distinct calendar months:
+$$\text{COUNT}(\text{DISTINCT } \text{TO\_CHAR}(\text{date}, \text{'YYYY-MM'})) \ge \text{min\_months}$$
 
-### Recurring detection
-A merchant is recurring if it appears in 3 or more distinct calendar months:
-```sql
-COUNT(DISTINCT TO_CHAR(date, 'YYYY-MM')) >= min_months
-```
-Only positive amounts counted — refunds excluded.
-
-### Fund period return
-```
-period_return_pct = (nav_end - nav_start) / nav_start * 100
-```
-NAV values are fetched as the closest available date on or before the requested date using `date <= $target ORDER BY date DESC LIMIT 1`.
-
-### Holding realised return
-```
-purchase_cost = purchase_nav × units
-current_value = current_nav × units
-realised_return_inr = current_value - purchase_cost
-realised_return_pct = realised_return_inr / purchase_cost * 100
-```
-`current_nav` = latest NAV in `fund_nav` for that fund (`ORDER BY date DESC LIMIT 1`).
+### 4. Fund & Holding Returns
+* **Mutual Fund Return (Period)**: 
+  $$\text{Return (\%)} = \frac{\text{NAV}_{\text{end}} - \text{NAV}_{\text{start}}}{\text{NAV}_{\text{start}}} \times 100$$
+* **Personal Holding Return**:
+  $$\text{Purchase Cost} = \text{units} \times \text{purchase\_nav}$$
+  $$\text{Current Value} = \text{units} \times \text{latest\_nav}$$
+  $$\text{Realised Return} = \text{Current Value} - \text{Purchase Cost}$$
 
 ---
 
-## Grounding
-
-Every number Tara states comes from a tool result. The agent's system prompt explicitly forbids estimating or calculating in prose. The LLM's role is to decide which tool to call and what parameters to pass — all arithmetic happens in SQL or TypeScript before the result reaches the model.
-
-For "no data" cases, tools return `{ found: false, message: "..." }` rather than zero or null. Tara surfaces this honestly to the user.
-
----
-
-## Evals
-
-The eval script (`scripts/eval.ts`) sends 12 questions to `POST /ask` and checks that answers contain expected terms or exclude forbidden ones. Coverage:
-
-- Single lookup (food spending March 2025)
-- Biggest expense
-- Merchant alias matching (Swiggy)
-- Transfer exclusion (Q1 spending)
-- Recurring subscription detection
-- No-data case (rent April 2025)
-- Portfolio value
-- Realised return on a specific holding
-- Fund period return ranking
-- Multi-category comparison (food vs travel)
-- Month-over-month category change
-- Net spend after refunds
-
-Run with: `npx tsx scripts/eval.ts`
+## 📋 Evaluation Coverage
+The project includes a verification suite (`scripts/eval.ts`) testing 12 distinct functional scenarios:
+1. Food spending lookup
+2. Single largest expense queries
+3. Fuzzy merchant matching (e.g. Swiggy)
+4. Category exclusions (excluding internal transfers)
+5. Recurring subscriptions detection
+6. Clean no-data notifications
+7. Total portfolio valuation
+8. Realised investment returns
+9. Date range NAV calculations and ranking
+10. Comparative spending analysis (Food vs Travel)
+11. MoM category variations
+12. Net spending calculation after refunds
 
 ---
 
-## Observability
-
-Each `POST /ask` request logs to the server console:
-- `request_id` — UUID generated per request
-- `question` — original user question
-- `latency_ms` — total time from request to response
-- `status` — success or error
-- `detail` — error message if applicable
-
-Database queries log via the `client.ts` query wrapper: SQL prefix, duration, row count. This makes it easy to inspect what the agent queried and how long it took.
-
----
-
-## Deployment
-
-- App: Render free tier (Node.js web service)
-- Database: Neon free tier (serverless Postgres)
-- After deploy, ingest script is run against `DATABASE_URL` pointing to Neon
-
-**Tradeoffs:**
-- Render free tier sleeps after 15 minutes of inactivity — first request after sleep has ~30 second cold start
-- Neon free tier has connection limits — pool size kept at 10 max connections
-- Groq free tier has rate limits — sustained high traffic may hit per-minute limits
-
----
-
-## Failure modes and what I'd fix with more time
-
-1. **Merchant canonicalization is coarse** — first-token matching works for most cases but fails on merchants with uninformative first tokens (e.g. "THE GOOD PLACE" → "the"). A Levenshtein edit-distance clustering pass at ingest time would be more robust.
-
-2. **Groq rate limits** — a production version would use a paid provider or implement request queuing with exponential backoff.
-
-3. **Relative date handling** — "last month" is currently interpreted as March 2025 (hardcoded in system prompt). A production agent would resolve relative dates against the actual current date or the latest date in the database.
-
-4. **No persistent request logs** — logs go to console only. A `request_logs` table in Postgres would enable querying failed runs, latency trends, and tool usage patterns.
-
-5. **Single snapshot per query** — the agent always queries `sample_a` unless told otherwise. A production system would associate each user with their own dataset and resolve the snapshot_id automatically.
+## 🚀 Known Limitations
+* **Upstream LLM Quota Limits**: The Groq Free Tier has strict Daily Token Limits (TPD). Sustained concurrent requests may trigger temporary API rate limiting (HTTP 429).
+* **Render Service Sleep**: On Render's Free tier, the web app sleeps after 15 minutes of inactivity, causing a ~30 second cold start delay on the first query.
