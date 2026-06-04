@@ -28,8 +28,7 @@ Tara does not guess, estimate, or invent numbers. Every figure in a response is 
 
 ## 🌐 Deployed URL
 **Live API**: `https://tara-finance-agent.onrender.com`  
-`POST /ask` is publicly reachable at this URL backed by Neon Postgres.  
-*(URL will be updated after deployment)*
+`POST /ask` is publicly reachable at this URL backed by Neon Postgres.
 
 ---
 
