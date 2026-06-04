@@ -3,11 +3,13 @@
 Tara is a personal finance research AI agent that answers natural language questions about spending, transactions, and investment portfolios. Built with **Mastra SDK**, **PostgreSQL**, and **TypeScript**.
 
 ```mermaid
-flowchart LR
-    Client([User API Client]) <-->|REST API| Express[Express Server]
-    Express <-->|Mastra SDK| Tara[Tara Agent]
-    Tara <-->|customModel Proxy| Groq[Groq API Llama 4]
-    Tara <-->|Local SQL Tools| Postgres[(PostgreSQL)]
+flowchart TD
+    Client([User API Client]) <-->|POST /ask| Server[Express Server]
+    subgraph Mastra SDK Container
+        Server <-->|agent.generate| Tara[Tara Agent]
+        Tara <-->|customModel Proxy| Groq[Groq API]
+        Tara <-->|Local SQL Tools| Postgres[(PostgreSQL)]
+    end
 ```
 
 Tara does not guess, estimate, or invent numbers. Every figure in a response is guaranteed to be grounded, retrieved directly via SQL from a PostgreSQL database, and processed.
@@ -16,7 +18,7 @@ Tara does not guess, estimate, or invent numbers. Every figure in a response is 
 
 ## ⚡ Tech Stack
 
-* **Runtime**: Node.js v22+ & TypeScript (`npx tsx`)
+* **Runtime**: Node.js v18+ & TypeScript (`npx tsx`)
 * **Agent Orchestration**: Mastra SDK
 * **LLM**: Groq (`meta-llama/llama-4-scout-17b-16e-instruct`) — *Free Tier*
 * **Database**: PostgreSQL 14+
@@ -24,11 +26,18 @@ Tara does not guess, estimate, or invent numbers. Every figure in a response is 
 
 ---
 
+## 🌐 Deployed URL
+**Live API**: `https://tara-finance-agent.onrender.com`  
+`POST /ask` is publicly reachable at this URL backed by Neon Postgres.  
+*(URL will be updated after deployment)*
+
+---
+
 ## 🚀 Quick Start
 
 ### 📋 Prerequisites
 Ensure you have the following installed locally:
-* **Node.js** (v22.13.0 or higher)
+* **Node.js** (v18+ or higher)
 * **PostgreSQL** (running locally on port `5433` or accessible via URI)
 * **Groq API Key** (available for free at [console.groq.com](https://console.groq.com))
 
@@ -89,11 +98,8 @@ npm run dev
 
 **Production Mode:**
 ```bash
-# Build the production bundle
-npm run build
-
-# Start the Express server
 npm start
+# which runs: npx tsx src/server.ts
 ```
 The server will start listening at `http://localhost:3000`.
 

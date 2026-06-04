@@ -15,7 +15,7 @@ sequenceDiagram
     participant API as Express API (/ask)
     participant Agent as Tara Agent
     participant Proxy as customModel Proxy
-    participant LLM as Groq (Llama 4 Scout)
+    participant LLM as Groq (meta-llama/llama-4-scout-17b-16e-instruct)
     participant Tools as SQL Tools
     participant DB as PostgreSQL
 
@@ -138,6 +138,28 @@ A merchant is flagged as recurring if it appears in at least $N$ distinct calend
 
 ---
 
+## 🔍 Observability
+Each POST /ask request logs to the server console:
+- request_id — UUID per request
+- question — original user query
+- latency_ms — total response time
+- status — success or error
+- detail — error message if applicable
+
+Database queries log via the query wrapper in src/db/client.ts: SQL prefix (first 80 chars), duration in ms, and row count. To inspect a failed run: find the request_id in the server logs, trace the error detail and the last tool call before failure. API keys and memo text are never logged.
+
+---
+
+## 🚀 Deployment
+- App: Render free tier (Node.js web service)
+- Database: Neon free tier (serverless Postgres)
+- After deploy, ingest script is run pointing to Neon DATABASE_URL
+- Environment variables set on Render: DATABASE_URL, GROQ_API_KEY, PORT
+
+Tradeoffs: Render sleeps after 15 minutes of inactivity causing ~30 second cold start on first request. Neon free tier has 0.5GB storage and connection limits — pool max kept at 10.
+
+---
+
 ## 📋 Evaluation Coverage
 The project includes a verification suite (`scripts/eval.ts`) testing 12 distinct functional scenarios:
 1. Food spending lookup
@@ -158,3 +180,8 @@ The project includes a verification suite (`scripts/eval.ts`) testing 12 distinc
 ## 🚀 Known Limitations
 * **Upstream LLM Quota Limits**: The Groq Free Tier has strict Daily Token Limits (TPD). Sustained concurrent requests may trigger temporary API rate limiting (HTTP 429).
 * **Render Service Sleep**: On Render's Free tier, the web app sleeps after 15 minutes of inactivity, causing a ~30 second cold start delay on the first query.
+
+---
+
+## ⏳ Async Milestone
+The long-running async tool milestone was intentionally skipped. All four tools execute synchronously. The heaviest operation (rank_all across 8 funds) completes in under 500ms against the current dataset. With more time, BullMQ with a jobs table in Postgres would be the right addition for larger datasets or flaky external data sources.
